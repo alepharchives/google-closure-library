@@ -42,7 +42,7 @@ function testDeserialization() {
     var serializer = new goog.proto2.WireFormatSerializer();
 
     var message = serializer.deserialize(proto2.TestAllTypes.getDescriptor(),
-                                                        expectedBinary.buffer);
+                                                        expectedBinary);
     assertDeserializationMatches(message);
 }
 

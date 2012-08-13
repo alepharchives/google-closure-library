@@ -13,8 +13,11 @@
 goog.provide('goog.proto2.WireFormatSerializer');
 
 goog.require('goog.proto2.Serializer');
-goog.require('goog.proto2.Util');
+goog.require('goog.debug.Error');
 goog.require('goog.math.Long');
+
+// Unused here but necessary to load type information to please the type checker
+goog.require('goog.proto2.LazyDeserializer');
 
 /**
  * WireFormatSerializer, a serializer which serializes messages to protocol
@@ -25,7 +28,7 @@ goog.require('goog.math.Long');
 goog.proto2.WireFormatSerializer = function() {
     /**
      * Used during deserialization to track position in the stream.
-     * @type {int}
+     * @type {number}
      * @private
      */
      this.deserializationIndex_ = 0;
@@ -33,9 +36,18 @@ goog.proto2.WireFormatSerializer = function() {
 goog.inherits(goog.proto2.WireFormatSerializer, goog.proto2.Serializer);
 
 /**
+ * Called when deserilizing incorrectly formated messages
+ * @param {string} errMsg
+ * @private
+ */
+goog.proto2.WireFormatSerializer.prototype.badMessageFormat_ = function(errMsg) {
+    throw new goog.debug.Error("Error deserializing incorrectly formated message, " + errMsg);
+};
+
+/**
  * Serializes a message to an ArrayBuffer. 
  * @param {goog.proto2.Message} message The message to be serialized.
- * @return {!ArrayBuffer} The serialized message in wire format.
+ * @return {!Uint8Array} The serialized message in wire format.
  * @override
  */
 goog.proto2.WireFormatSerializer.prototype.serialize = function(message) {
@@ -60,62 +72,65 @@ goog.proto2.WireFormatSerializer.prototype.serialize = function(message) {
         } while(field.isRepeated() && (r < message.countOf(field)));
     }
 
-    var resultBuffer = new ArrayBuffer(totalLength);
-    var resultView = new Uint8Array(resultBuffer);
+    var resultArray = new Uint8Array(totalLength);
 
     var offset = 0;
     for(var i = 0; i < fieldEncodings.length; i++) {
         var enc = fieldEncodings[i];
 
-        resultView.set(new Uint8Array(enc), offset);
+        resultArray.set(new Uint8Array(enc), offset);
         offset += enc.byteLength;
     }
 
-    return resultBuffer;
+    return resultArray;
 }
 
-/** @override */
+/**
+ * @param {goog.proto2.FieldDescriptor} field
+ * @param {*} value
+ * @override
+ */
 goog.proto2.WireFormatSerializer.prototype.getSerializedValue = function(field, value) {
     var tag = field.getTag();
     var fieldType = field.getFieldType();
     var wireType = goog.proto2.WireFormatSerializer.WireTypeForFieldType(fieldType);
 
     var keyInt = (tag << 3) | wireType;
-    var keyBuffer = this.encodeVarInt(goog.math.Long.fromNumber(keyInt));
+    var keyArray = this.encodeVarInt(goog.math.Long.fromNumber(keyInt));
 
-    var valBuffer;
+    var valArray;
     switch(wireType) {
     case goog.proto2.WireFormatSerializer.WireType.VARINT:
-        var integer = goog.math.Long.fromNumber(value);
+        var integer = goog.math.Long.fromNumber(/** @type {number} */(value));
 
         if(fieldType == goog.proto2.FieldDescriptor.FieldType.SINT64 ||
            fieldType == goog.proto2.FieldDescriptor.FieldType.SINT32) {
             integer = this.zigZagEncode(integer); 
         }
 
-        valBuffer = this.encodeVarInt(integer);
+        valArray = this.encodeVarInt(integer);
         break;
     case goog.proto2.WireFormatSerializer.WireType.FIXED64:
-        valBuffer = this.encodeFixed64(field, value);
+        valArray = this.encodeFixed64(field,/** @type {number} */(value));
         break;
     case goog.proto2.WireFormatSerializer.WireType.LENGTH_DELIMITED:
-        valBuffer = this.encodeLengthDelimited(field, value);
+        valArray = this.encodeLengthDelimited(field, value);
         break;
     case goog.proto2.WireFormatSerializer.WireType.START_GROUP:
-        goog.proto2.Util.assert(false, "Use of Groups deprecated and not supported");
+        this.badMessageFormat_("Use of Groups deprecated and not supported");
         break;
     case goog.proto2.WireFormatSerializer.WireType.FIXED32:
-        valBuffer = this.encodeFixed32(field, value);
+        valArray = this.encodeFixed32(field,/** @type {number} */(value));
         break;
     default:
-        goog.proto2.Util.assert(false, "Unexpected wire type");
+        this.badMessageFormat_("Unexpected wire type");
     }
 
-    var fieldEncoding = new Uint8Array(keyBuffer.byteLength + valBuffer.byteLength);
-    fieldEncoding.set(new Uint8Array(keyBuffer), 0);
-    fieldEncoding.set(new Uint8Array(valBuffer), keyBuffer.byteLength);
+    var fieldEncoding = new Uint8Array(keyArray.length + valArray.length);
+    fieldEncoding.set(new Uint8Array(keyArray), 0);
+    fieldEncoding.set(new Uint8Array(valArray), keyArray.length);
 
-    return fieldEncoding.buffer;
+    return fieldEncoding;
 }
 
 /**
@@ -141,7 +156,7 @@ goog.proto2.WireFormatSerializer.prototype.zigZagDecode = function(longint) {
 /**
  * Encodes an integer as a varint.
  * @param {!goog.math.Long} longint The integer to be encoded.
- * @return {ArrayBuffer} The encoded value.
+ * @return {!Uint8Array} The encoded value.
  * @protected
  */
 goog.proto2.WireFormatSerializer.prototype.encodeVarInt = function(longint) {
@@ -163,7 +178,7 @@ goog.proto2.WireFormatSerializer.prototype.encodeVarInt = function(longint) {
     }
 
     var bytesArray = encodeVarIntArray(longint);
-    return (new Uint8Array(bytesArray)).buffer;
+    return new Uint8Array(bytesArray);
 }
 
 /**
@@ -173,7 +188,7 @@ goog.proto2.WireFormatSerializer.prototype.encodeVarInt = function(longint) {
  * integers.
  * @param {!goog.proto2.FieldDescriptor} field The field to be encoded.
  * @param {!number} value The value to be encoded.
- * @return {ArrayBuffer} An 8 byte little endian array representing the value.
+ * @return {!Uint8Array} An 8 byte little endian array representing the value.
  */
 goog.proto2.WireFormatSerializer.prototype.encodeFixed64 = function(field, value) {
     var buffer = new ArrayBuffer(8);
@@ -198,18 +213,18 @@ goog.proto2.WireFormatSerializer.prototype.encodeFixed64 = function(field, value
         view.setInt32(4, longForm.getHighBits(), true);
         break;
     default:
-        goog.proto2.Util.assert(false, "Unexpected field type");
+        this.badMessageFormat_("Unexpected field type");
         break;
     }
 
-    return buffer;
+    return new Uint8Array(buffer);
 }
 
 /**
  * Encodes given number to a fixed 32 bit value.
  * @param {!goog.proto2.FieldDescriptor} field The field to be encoded.
  * @param {number} value The value to be encoded.
- * @return {ArrayBuffer} A 4 byte little endian array representing the value.
+ * @return {!Uint8Array} A 4 byte little endian array representing the value.
  * @protected
  */
 goog.proto2.WireFormatSerializer.prototype.encodeFixed32 =
@@ -228,10 +243,10 @@ goog.proto2.WireFormatSerializer.prototype.encodeFixed32 =
         view.setInt32(0, value, true);
         break;
     default:
-        goog.proto2.Util.assert(false, "Unexpected field type");
+        this.badMessageFormat_("Unexpected field type");
     }
 
-    return buffer;
+    return new Uint8Array(buffer);
 }
 
 /**
@@ -239,40 +254,38 @@ goog.proto2.WireFormatSerializer.prototype.encodeFixed32 =
  * encoded depends on the field type.
  * @param {!goog.proto2.FieldDescriptor} field The field to be encoded.
  * @param {*} value The value to be encoded.
- * @return {ArrayBuffer} A multibyte little endian array representing the value.
+ * @return {!Uint8Array} A multibyte little endian array representing the value.
  * @protected
  */
 goog.proto2.WireFormatSerializer.prototype.encodeLengthDelimited =
         function(field, value) {
-    var resultBuffer;
+    var resultArray;
 
     switch(field.getFieldType()) {
     case goog.proto2.FieldDescriptor.FieldType.MESSAGE:
-        resultBuffer = this.serialize(value);
+        resultArray = this.serialize(/** @type {goog.proto2.Message} */(value));
         break;
     case goog.proto2.FieldDescriptor.FieldType.STRING:
-        resultBuffer = TextEncoder("utf-8").encode(value).buffer;
-        break;
     case goog.proto2.FieldDescriptor.FieldType.BYTES:
-        resultBuffer = TextEncoder("utf-8").encode(value).buffer;
+        resultArray = TextEncoder("utf-8").encode(value);
         break;
     default:
-        goog.proto2.Util.assert(false, "Unexpected field type");
+        this.badMessageFormat_("Unexpected field type");
     }
 
-    var lengthInt = resultBuffer.byteLength;
-    var lengthBuffer = this.encodeVarInt(goog.math.Long.fromNumber(lengthInt));
-    finalBuffer = new Uint8Array(lengthBuffer.byteLength + lengthInt);
-    finalBuffer.set(new Uint8Array(lengthBuffer), 0);
-    finalBuffer.set(new Uint8Array(resultBuffer), lengthBuffer.byteLength);
+    var lengthInt = resultArray.length;
+    var lengthArray = this.encodeVarInt(goog.math.Long.fromNumber(lengthInt));
+    var finalArray = new Uint8Array(lengthArray.length + lengthInt);
+    finalArray.set(lengthArray, 0);
+    finalArray.set(resultArray, lengthArray.length);
 
-    return finalBuffer;
+    return finalArray;
 }
 
 /**
  * Deserializes data stream and initializes message object
- * @param {!goog.proto2.Message} message The message to initialize.
- * @param {!ArrayBuffer} data The stream to deserialize.
+ * @param {goog.proto2.Message} message The message to initialize.
+ * @param {*} data The stream to deserialize.
  * @override 
  */
 goog.proto2.WireFormatSerializer.prototype.deserializeTo = function(message, data) {
@@ -280,8 +293,8 @@ goog.proto2.WireFormatSerializer.prototype.deserializeTo = function(message, dat
     var messageDescriptor = message.getDescriptor();
     this.deserializationIndex_ = 0;
     
-    while(this.deserializationIndex_ < data.byteLength) {
-        var keyInt = this.decodeVarInt(data);
+    while(this.deserializationIndex_ < data.length) {
+        var keyInt = this.decodeVarInt(/** @type {!Uint8Array} */(data));
 
         var tag = keyInt >> 3;
         var wireType = keyInt % 8;
@@ -290,7 +303,7 @@ goog.proto2.WireFormatSerializer.prototype.deserializeTo = function(message, dat
 
         // Though field may be null we still decode the value to remove it
         // from the stream.
-        var value = this.decodeValue(wireType, field, data);
+        var value = this.decodeValue(wireType, field, /** @type {!Uint8Array} */(data));
 
         if((field != null) && (value != null)) {
             if(field.isRepeated()) {
@@ -304,13 +317,12 @@ goog.proto2.WireFormatSerializer.prototype.deserializeTo = function(message, dat
 
 /**
  * Deserializes varint from data stream.
- * @param {!ArrayBuffer} data The data stream to read from.
+ * @param {!Uint8Array} data The data stream to read from.
  * @return {number} Decoded value.
  * @protected
  */
 goog.proto2.WireFormatSerializer.prototype.decodeVarInt = function(data) {
-    var view = new Uint8Array(data);
-    var intval = view[this.deserializationIndex_++];
+    var intval = data[this.deserializationIndex_++];
 
     if(intval > 127) {
 
@@ -326,9 +338,9 @@ goog.proto2.WireFormatSerializer.prototype.decodeVarInt = function(data) {
 
 /**
  * Deserializes the next value from the data stream.
- * @param {!int} wireType The wiretype to decode.
+ * @param {!number} wireType The wiretype to decode.
  * @param {goog.proto2.FieldDescriptor} field The field to deserialize.
- * @data {!ArrayBuffer} data The data stream to read from.
+ * @param {!Uint8Array} data The data stream to read from.
  * @return {*} The decoded value.
  * @protected
  */
@@ -349,7 +361,7 @@ goog.proto2.WireFormatSerializer.prototype.decodeValue =
         value = this.decodeFixed64(field, data);
         break;
     default:
-        goog.proto2.Util.assert(false, "Unexpected wire type");
+        this.badMessageFormat_("Unexpected wire type of " + wireType);
         break;
     }
 
@@ -358,8 +370,8 @@ goog.proto2.WireFormatSerializer.prototype.decodeValue =
 
 /**
  * Decodes a varint from the stream and converts it to the correct type.
- * @param {!goog.proto2.FieldDescriptor} field The field to decode.
- * @param {!ArrayBuffer} data The data stream to read from.
+ * @param {goog.proto2.FieldDescriptor} field The field to decode.
+ * @param {!Uint8Array} data The data stream to read from.
  * @return {*} The decoded value. 
  * @protected
  */
@@ -396,7 +408,7 @@ goog.proto2.WireFormatSerializer.prototype.decodeVarIntTypes =
         value = (value === 0 ? false : true);
         break;
     default:
-        goog.proto2.Util.assert(false, "Unexpected field type");
+        this.badMessageFormat_("Unexpected field type");
         break;
     }
 
@@ -406,35 +418,35 @@ goog.proto2.WireFormatSerializer.prototype.decodeVarIntTypes =
 /**
  * Deserializes length delimited fields.
  * @param {goog.proto2.FieldDescriptor} field The field to deserialize.
- * @param {!ArrayBuffer} data The data stream to read from.
+ * @param {!Uint8Array} data The data stream to read from.
  * @return {*} The decoded value.
  * @protected
  */
 goog.proto2.WireFormatSerializer.prototype.decodeLengthDelimited =
         function(field, data) {
+
     var fieldLength = this.decodeVarInt(data);
-    var fieldBuffer = data.slice(this.deserializationIndex_,
-                                 this.deserializationIndex_ + fieldLength);
-    var fieldView = new Uint8Array(fieldBuffer);
+    var fieldArray = new Uint8Array(data.buffer,
+                                    data.byteOffset + this.deserializationIndex_,
+                                    fieldLength);
     this.deserializationIndex_ += fieldLength;
 
     if(!field) {
         return null;
     }
 
+    var value;
     switch(field.getFieldType()) {
     case goog.proto2.FieldDescriptor.FieldType.STRING:
-        value = TextDecoder("utf-8").decode(fieldView);
-        break;
     case goog.proto2.FieldDescriptor.FieldType.BYTES:
-        value = TextDecoder("utf-8").decode(fieldView);
+        value = TextDecoder("utf-8").decode(fieldArray);
         break;
     case goog.proto2.FieldDescriptor.FieldType.MESSAGE:
         var serializer = new goog.proto2.WireFormatSerializer();
-        value = serializer.deserialize(field.getFieldMessageType(), fieldView.buffer);
+        value = serializer.deserialize(field.getFieldMessageType(), fieldArray);
         break;
     default:
-        goog.proto2.Util.assert(false, "Unexpected field type");
+        this.badMessageFormat_("Unexpected field type");
         break;
     }
 
@@ -443,13 +455,13 @@ goog.proto2.WireFormatSerializer.prototype.decodeLengthDelimited =
 
 /**
  * Deserializes a 4 byte value from the stream.
- * @param {!goog.proto2.FieldDescriptor} field The field to deserialize.
- * @param {!ArrayBuffer} data The data stream to read from.
+ * @param {goog.proto2.FieldDescriptor} field The field to deserialize.
+ * @param {!Uint8Array} data The data stream to read from.
  * @return {*} The decoded value.
  * @protected
  */
 goog.proto2.WireFormatSerializer.prototype.decodeFixed32 = function(field, data) {
-    var view = new DataView(data, this.deserializationIndex_, 4);
+    var view = new DataView(data.buffer, this.deserializationIndex_, 4);
     this.deserializationIndex_ += 4;
 
     if(!field) {
@@ -468,7 +480,7 @@ goog.proto2.WireFormatSerializer.prototype.decodeFixed32 = function(field, data)
         value = view.getInt32(0, true);
         break;
     default:
-        goog.proto2.Util.assert(false, "Unexpected field type");
+        this.badMessageFormat_("Unexpected field type");
     }
     
     return value;
@@ -476,13 +488,13 @@ goog.proto2.WireFormatSerializer.prototype.decodeFixed32 = function(field, data)
 
 /**
  * Deserializes a 8 byte value from the stream.
- * @param {!goog.proto2.FieldDescriptor} field The field to deserialize.
- * @param {!ArrayBuffer} data The data stream to read from.
+ * @param {goog.proto2.FieldDescriptor} field The field to deserialize.
+ * @param {!Uint8Array} data The data stream to read from.
  * @return {*} The decoded value.
  * @protected
  */
 goog.proto2.WireFormatSerializer.prototype.decodeFixed64 = function(field, data) {
-    var view = new DataView(data, this.deserializationIndex_, 8);
+    var view = new DataView(data.buffer, this.deserializationIndex_, 8);
     this.deserializationIndex_ += 8;
 
     if(!field) {
@@ -503,7 +515,7 @@ goog.proto2.WireFormatSerializer.prototype.decodeFixed64 = function(field, data)
                                     view.getInt32(4, true))).toString();
         break;
     default:
-        goog.proto2.Util.assert(false, "Unexpected field type");
+        this.badMessageFormat_("Unexpected field type");
     }
     
     return value;
@@ -511,8 +523,8 @@ goog.proto2.WireFormatSerializer.prototype.decodeFixed64 = function(field, data)
 
 /**
  * Maps field types to wire types.
- * @param {!int} fieldType The field type to map.
- * @return {int} The wire type mapped to.
+ * @param {!number} fieldType The field type to map.
+ * @return {!number} The wire type mapped to.
  * @protected
  */
 goog.proto2.WireFormatSerializer.WireTypeForFieldType = function(fieldType) {
@@ -531,7 +543,7 @@ goog.proto2.WireFormatSerializer.WireType = {
     LENGTH_DELIMITED:  2,
     START_GROUP:       3,
     END_GROUP:         4,
-    FIXED32:           5,
+    FIXED32:           5
 };
 
 /**
@@ -541,7 +553,7 @@ goog.proto2.WireFormatSerializer.WireType = {
  * @private
  */
 goog.proto2.WireFormatSerializer.kWireTypeForFieldType = [
-  -1,                                                  // invalid
+  -1,                                                          // invalid
   goog.proto2.WireFormatSerializer.WireType.FIXED64,           // DOUBLE
   goog.proto2.WireFormatSerializer.WireType.FIXED32,           // FLOAT
   goog.proto2.WireFormatSerializer.WireType.VARINT,            // INT64
@@ -559,5 +571,5 @@ goog.proto2.WireFormatSerializer.kWireTypeForFieldType = [
   goog.proto2.WireFormatSerializer.WireType.FIXED32,           // SFIXED32
   goog.proto2.WireFormatSerializer.WireType.FIXED64,           // SFIXED64
   goog.proto2.WireFormatSerializer.WireType.VARINT,            // SINT32
-  goog.proto2.WireFormatSerializer.WireType.VARINT,            // SINT64
+  goog.proto2.WireFormatSerializer.WireType.VARINT             // SINT64
 ];
