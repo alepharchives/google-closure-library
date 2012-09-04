@@ -20,6 +20,45 @@ goog.require('goog.math.Long');
 goog.require('goog.proto2.LazyDeserializer');
 
 /**
+ * Utility functions for converting between the UTF-8 encoded arrays expected by
+ * protobuf wire format and the javascript strings used by the js protobuf library.
+ */
+
+/**
+ * The resulting encoding is a string with characters in the range 0x0000-0x00FF
+ * @param {Uint8Array} array
+ * @return {string}
+ */
+function UTF8ArrayToASCIIString(array) {
+    var chars = [];
+    for (var i = 0; i < array.length; i++) {
+        chars.push(String.fromCharCode(array[i]));
+    }
+    return chars.join('');
+
+    // This results in a string with a bunch of null characters in it, why?
+    //return Array.prototype.map.call(array, String.fromCharCode).join('');
+}
+
+function UTF8ArrayToString(array) {
+    // The resulting encoding is a string in the javascript native USC-2 encoding
+    return decodeURIComponent(escape(UTF8ArrayToASCIIString(array)));
+}
+
+function ASCIIStringToArray(string) {
+    // Takes a string with characters in the range 0x0000-0x00FF
+    // (i.e. all single byte values) and returns the corresponding Uint8Array
+    return new Uint8Array(Array.prototype.map.call(string, function(ch) {
+        return ch.charCodeAt(0);
+    }));
+}
+
+function StringToUTF8Array(string) {
+    // Takes a standard USC-2 javascript string and returns a UTF-8 encoded Uint8Array
+    return ASCIIStringToArray(unescape(encodeURIComponent(string)));
+}
+
+/**
  * WireFormatSerializer, a serializer which serializes messages to protocol
  * buffer wire format suitable for use by other protocol buffer implemtations.
  * @constructor
@@ -266,8 +305,10 @@ goog.proto2.WireFormatSerializer.prototype.encodeLengthDelimited =
         resultArray = this.serialize(/** @type {goog.proto2.Message} */(value));
         break;
     case goog.proto2.FieldDescriptor.FieldType.STRING:
+        resultArray = StringToUTF8Array(/** @type {string} */(value));
+        break;
     case goog.proto2.FieldDescriptor.FieldType.BYTES:
-        resultArray = TextEncoder("utf-8").encode(value);
+        resultArray = ASCIIStringToArray(/** @type {string} */(value));
         break;
     default:
         this.badMessageFormat_("Unexpected field type");
@@ -438,8 +479,10 @@ goog.proto2.WireFormatSerializer.prototype.decodeLengthDelimited =
     var value;
     switch(field.getFieldType()) {
     case goog.proto2.FieldDescriptor.FieldType.STRING:
+        value = UTF8ArrayToString(fieldArray);
+        break;
     case goog.proto2.FieldDescriptor.FieldType.BYTES:
-        value = TextDecoder("utf-8").decode(fieldArray);
+        value = UTF8ArrayToASCIIString(fieldArray);
         break;
     case goog.proto2.FieldDescriptor.FieldType.MESSAGE:
         var serializer = new goog.proto2.WireFormatSerializer();
